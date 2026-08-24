@@ -237,6 +237,31 @@ describe("handleQueue", () => {
     await expectRetry(batch);
   });
 
+  it("retries malformed version-1 messages without affecting valid batch messages", async () => {
+    await putValidConfig();
+    const malformedEnvelope = { version: 1 } as unknown as QueueEventEnvelope;
+    const batch = createMessageBatch<QueueEventEnvelope>("statuspage-telegram-notifications", [
+      { id: "acknowledge", timestamp: new Date(), attempts: 1, body: incidentEnvelope },
+      { id: "retry-malformed", timestamp: new Date(), attempts: 1, body: malformedEnvelope },
+    ] satisfies TestQueueMessage[]);
+    const log = vi.fn();
+
+    await expect(handleQueue(batch, env, {
+      sendTelegram: sendResults({ ok: true }, { ok: true }),
+      log,
+      now: () => new Date(),
+    })).resolves.toBeUndefined();
+
+    await expect(queueResult(batch)).resolves.toMatchObject({
+      explicitAcks: ["acknowledge"],
+      retryMessages: [expect.objectContaining({ msgId: "retry-malformed" })],
+    });
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({
+      messageId: "retry-malformed",
+      action: "invalid_envelope",
+    }));
+  });
+
   it("decides each message in a batch independently", async () => {
     await putValidConfig();
     const failedEnvelope = structuredClone(incidentEnvelope);
@@ -262,6 +287,24 @@ describe("handleQueue", () => {
       explicitAcks: ["acknowledge"],
       retryMessages: [expect.objectContaining({ msgId: "retry" })],
     });
+  });
+
+  it("does not log a target label that equals a configured chat ID", async () => {
+    const configWithSensitiveLabel = structuredClone(validConfig);
+    configWithSensitiveLabel.telegram.targets[0].label = "1001";
+    await env.STATUSPAGE_KV.put("config", JSON.stringify(configWithSensitiveLabel));
+    const log = vi.fn();
+
+    await handleQueue(batchFor(incidentEnvelope), env, {
+      sendTelegram: sendResults({ ok: true }, { ok: true }),
+      log,
+      now: () => new Date(),
+    });
+
+    const serialized = JSON.stringify(log.mock.calls.map(([entry]) => entry));
+    expect(serialized).toContain("targetHash");
+    expect(serialized).not.toContain("1001");
+    expect(serialized).not.toContain("-1002002");
   });
 
   it("emits redacted structured operational logs", async () => {

@@ -35,10 +35,22 @@ function syntheticFailure(description: string): TelegramSendResult {
   return { ok: false, kind: "network", description };
 }
 
-function targetContext(target: TelegramTarget, targetHash: string): Record<string, string> {
-  return target.label === undefined
-    ? { targetHash: targetHash.slice(0, 12) }
-    : { targetLabel: target.label };
+function targetContext(targetHash: string): Record<string, string> {
+  return { targetHash: targetHash.slice(0, 12) };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isProcessableEnvelope(value: unknown): value is QueueEventEnvelope {
+  if (!isRecord(value) || value.version !== 1 || !isRecord(value.event)) {
+    return false;
+  }
+  const event = value.event;
+  return (event.type === "incident" || event.type === "component") &&
+    isRecord(event.page) &&
+    typeof event.page.id === "string";
 }
 
 function safeLog(deps: ConsumerDependencies, entry: Record<string, unknown>): void {
@@ -110,7 +122,7 @@ async function deliverToTarget(
     return { outcome: "failed", failure: syntheticFailure("consumer_error") };
   }
 
-  const context = { ...logContext, ...targetContext(target, targetHash) };
+  const context = { ...logContext, ...targetContext(targetHash) };
   const key = deliveryKey(fingerprint, targetHash);
   let exists: boolean;
   try {
@@ -163,14 +175,15 @@ export async function processQueueMessage(
   env: WorkerEnv,
   deps: ConsumerDependencies = defaultDependencies,
 ): Promise<void> {
-  const envelope = message.body;
   const initialContext = {
     messageId: message.id,
     attempt: message.attempts,
   };
+  let logContext: Record<string, unknown> = initialContext;
 
   try {
-    if (envelope.version !== 1) {
+    const envelope: unknown = message.body;
+    if (!isProcessableEnvelope(envelope)) {
       safeLog(deps, { ...initialContext, action: "invalid_envelope" });
       retryMessage(
         message,
@@ -181,7 +194,7 @@ export async function processQueueMessage(
       return;
     }
 
-    const logContext = {
+    logContext = {
       ...initialContext,
       eventType: envelope.event.type,
       pageId: envelope.event.page.id,
@@ -203,6 +216,7 @@ export async function processQueueMessage(
     const text = formatTelegramMessage(envelope.event, pageConfig, config.timezone);
     const fingerprint = await fingerprintEvent(envelope.event);
     const eventContext = { ...logContext, fingerprint };
+    logContext = eventContext;
     const redactedValues = [
       env.TELEGRAM_BOT_TOKEN,
       ...config.telegram.targets.map((target) => target.chatId),
@@ -236,17 +250,10 @@ export async function processQueueMessage(
     }
     safeLog(deps, { ...eventContext, action: "acknowledged" });
   } catch {
-    const eventContext = envelope.version === 1
-      ? {
-          ...initialContext,
-          eventType: envelope.event.type,
-          pageId: envelope.event.page.id,
-        }
-      : initialContext;
     retryMessage(
       message,
       deps,
-      eventContext,
+      logContext,
       [syntheticFailure("consumer_error")],
     );
   }
