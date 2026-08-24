@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "timezone": "Asia/Shanghai",
+  "telegram": {
+    "targets": [
+      {
+        "chatId": "123456789",
+        "label": "管理员"
+      },
+      {
+        "chatId": "-1001234567890",
+        "label": "运维群"
+      }
+    ]
+  },
+  "pages": {
+    "j2mfxwj97wnj": {
+      "name": "示例服务状态",
+      "url": "https://status.example.com"
+    }
+  }
+}
