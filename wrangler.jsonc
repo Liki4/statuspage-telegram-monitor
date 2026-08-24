@@ -1,0 +1,38 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "statuspage-telegram-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-24",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true
+  },
+  "kv_namespaces": [
+    {
+      "binding": "STATUSPAGE_KV"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "NOTIFICATION_QUEUE",
+        "queue": "statuspage-telegram-notifications"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "statuspage-telegram-notifications",
+        "max_batch_size": 5,
+        "max_batch_timeout": 5,
+        "max_retries": 5,
+        "dead_letter_queue": "statuspage-telegram-dlq"
+      }
+    ]
+  },
+  "secrets": {
+    "required": [
+      "TELEGRAM_BOT_TOKEN",
+      "WEBHOOK_SECRET"
+    ]
+  }
+}
