@@ -88,3 +88,16 @@ export interface DeliveryRecord {
   sentAt: string;
   telegramMessageId?: number;
 }
+
+export type TelegramSendResult =
+  | {
+      ok: true;
+      messageId?: number;
+    }
+  | {
+      ok: false;
+      kind: "network" | "http" | "invalid_response";
+      status?: number;
+      description: string;
+      retryAfter?: number;
+    };
