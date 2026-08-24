@@ -116,6 +116,22 @@ describe("sendTelegramMessage", () => {
     });
   });
 
+  it("truncates Telegram error descriptions to 300 characters", async () => {
+    const description = "x".repeat(350);
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({ ok: false, description }, { status: 400 }),
+    );
+
+    await expect(
+      sendTelegramMessage("bot-token", target, "alert", fetchImpl),
+    ).resolves.toEqual({
+      ok: false,
+      kind: "http",
+      status: 400,
+      description: "x".repeat(300),
+    });
+  });
+
   it("omits invalid retry_after values", async () => {
     for (const retryAfter of [0, -1, 1.5, 86401, "37", null]) {
       const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(

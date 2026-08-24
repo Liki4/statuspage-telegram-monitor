@@ -111,7 +111,89 @@ curl -i 'http://localhost:8787/webhook?token=local-test-webhook-secret' \
 
 ## Retries and DLQ
 
-The primary Queue is configured for five retries. Normal failures use 15, 30, 60, 120, and 240-second exponential delays before the code’s 900-second cap. Telegram `retry_after` values are bounded to 3600 seconds. A target with a successful delivery record is skipped on retry; free Queue retention is 24 hours. Inspect exhausted messages in Cloudflare Dashboard → **Queues** → `statuspage-telegram-dlq` → **Messages**. Correct the config or secrets, then manually post the saved JSON envelope to the primary Queue from the Dashboard while it remains within retention.
+The primary Queue is configured for five retries. Normal failures use 15, 30, 60, 120, and 240-second exponential delays before the code’s 900-second cap. Telegram `retry_after` values are bounded to 3600 seconds. A target with a successful delivery record is skipped on retry; free Queue retention is 24 hours.
+
+### Inspect and replay a DLQ message safely
+
+Use a temporary HTTP pull consumer to inspect `statuspage-telegram-dlq`. Do this before the 24-hour retention window expires. The API token needs account-level **Queues: Edit** permission. The pull response contains the Queue lease ID and the normalized event envelope, so store it in a private directory and do not paste it into tickets or chat.
+
+```bash
+set -euo pipefail
+umask 077
+mkdir -p dlq-recovery && cd dlq-recovery
+
+export ACCOUNT_ID='your-cloudflare-account-id'
+read -rsp 'Cloudflare API token (Queues Edit): ' CLOUDFLARE_API_TOKEN
+echo
+export CLOUDFLARE_API_TOKEN
+
+npx wrangler queues consumer http add statuspage-telegram-dlq \
+  --batch-size 1 \
+  --visibility-timeout-secs 600
+npx wrangler queues consumer http list statuspage-telegram-dlq --json
+
+export DLQ_QUEUE_ID="$({ npx wrangler queues info statuspage-telegram-dlq; } | sed -n 's/^Queue ID: //p')"
+export PRIMARY_QUEUE_ID="$({ npx wrangler queues info statuspage-telegram-notifications; } | sed -n 's/^Queue ID: //p')"
+: "${DLQ_QUEUE_ID:?could not determine DLQ Queue ID}"
+: "${PRIMARY_QUEUE_ID:?could not determine primary Queue ID}"
+
+curl --silent --show-error --fail-with-body \
+  "https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/queues/${DLQ_QUEUE_ID}/messages/pull" \
+  --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+  --header 'Content-Type: application/json' \
+  --data '{"batch_size":1,"visibility_timeout_ms":600000}' \
+  | tee dlq-pull.json
+
+jq -e '.success == true and (.result.messages | length) == 1' dlq-pull.json
+jq -er '.result.messages[0].body' dlq-pull.json > dlq-envelope.json
+jq -e '
+  .version == 1 and
+  (.event.type == "incident" or .event.type == "component") and
+  (.event.page.id | type == "string")
+' dlq-envelope.json
+```
+
+Pulling leases the message for 10 minutes; it does **not** acknowledge or delete it. Preserve `dlq-pull.json` until recovery is complete because it contains `lease_id`. If no message is returned, remove the temporary consumer with the cleanup command below and try again later. If inspection alone is sufficient, do not call the acknowledgement endpoint; let the lease expire so the message becomes visible again.
+
+Before replaying, identify and correct the original failure—for example, upload valid KV config or rotate/fix a Worker secret. Then create a primary-Queue request containing only the saved envelope and submit it as JSON:
+
+```bash
+jq -n --slurpfile envelope dlq-envelope.json \
+  '{body:$envelope[0],content_type:"json"}' > primary-replay.json
+
+curl --silent --show-error --fail-with-body \
+  "https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/queues/${PRIMARY_QUEUE_ID}/messages" \
+  --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+  --header 'Content-Type: application/json' \
+  --data @primary-replay.json \
+  | tee primary-replay-response.json
+
+jq -e '.success == true' primary-replay-response.json
+```
+
+Queue acceptance is not delivery confirmation. In another terminal, run `npx wrangler tail` and wait for the replayed event’s structured log to reach `action: "acknowledged"`; also confirm the expected Telegram targets received it. Target-level delivery records normally skip targets that succeeded before the original message entered the DLQ.
+
+Only after successful replay delivery, acknowledge the original DLQ lease so it cannot be replayed again:
+
+```bash
+jq -n --arg lease "$(jq -er '.result.messages[0].lease_id' dlq-pull.json)" \
+  '{acks:[{lease_id:$lease}],retries:[]}' > dlq-ack.json
+
+curl --silent --show-error --fail-with-body \
+  "https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/queues/${DLQ_QUEUE_ID}/messages/ack" \
+  --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+  --header 'Content-Type: application/json' \
+  --data @dlq-ack.json \
+  | tee dlq-ack-response.json
+
+jq -e '.success == true and .result.ackCount == 1' dlq-ack-response.json
+npx wrangler queues consumer http remove statuspage-telegram-dlq
+rm -f dlq-pull.json dlq-envelope.json primary-replay.json \
+  primary-replay-response.json dlq-ack.json dlq-ack-response.json
+unset CLOUDFLARE_API_TOKEN
+```
+
+If the lease expires before acknowledgement, do not reuse its stale `lease_id`; pull the DLQ message again. Always remove the temporary HTTP pull consumer when finished, including after an aborted recovery. Never acknowledge the DLQ message merely because the primary Queue accepted the replay.
 
 ## Security
 

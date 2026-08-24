@@ -212,7 +212,10 @@ export async function processQueueMessage(
       return;
     }
 
-    const pageConfig = config.pages[envelope.event.page.id];
+    const pageId = envelope.event.page.id;
+    const pageConfig = Object.hasOwn(config.pages, pageId)
+      ? config.pages[pageId]
+      : undefined;
     const text = formatTelegramMessage(envelope.event, pageConfig, config.timezone);
     const fingerprint = await fingerprintEvent(envelope.event);
     const eventContext = { ...logContext, fingerprint };

@@ -262,6 +262,27 @@ describe("handleQueue", () => {
     }));
   });
 
+  it("falls back to the raw page ID for inherited object property names", async () => {
+    await putValidConfig();
+    const reservedPageEnvelope = structuredClone(incidentEnvelope);
+    reservedPageEnvelope.event.page.id = "constructor";
+    const sendTelegram = sendResults({ ok: true }, { ok: true });
+    const batch = batchFor(reservedPageEnvelope);
+
+    await handleQueue(batch, env, {
+      sendTelegram,
+      log: vi.fn(),
+      now: () => new Date(),
+    });
+
+    expect(sendTelegram).toHaveBeenCalledTimes(2);
+    for (const call of sendTelegram.mock.calls) {
+      expect(call[2]).toContain("constructor");
+      expect(call[2]).not.toContain("Object：重大事件");
+    }
+    await expectAck(batch);
+  });
+
   it("decides each message in a batch independently", async () => {
     await putValidConfig();
     const failedEnvelope = structuredClone(incidentEnvelope);
