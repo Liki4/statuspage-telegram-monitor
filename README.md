@@ -4,6 +4,8 @@
 
 This Cloudflare Worker accepts one supported Statuspage webhook event at a time and publishes one Queue message for it. Every event in a deployment is delivered to the same configured Telegram target list. Runtime configuration lives in Workers KV, Queue retries handle transient delivery failures, and KV delivery records provide best-effort target-level deduplication.
 
+For a Dashboard-first walkthrough covering Cloudflare, GitHub, OpenAI, and Claude, see the [Chinese deployment guide](docs/deployment-zh.md).
+
 ## Supported events
 
 - Incident creation and update events.
