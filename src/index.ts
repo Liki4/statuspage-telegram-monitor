@@ -1,3 +1,4 @@
+import { handleQueue } from "./consumer";
 import type { FetchDependencies, QueueEventEnvelope, WorkerEnv } from "./types";
 import {
   normalizeStatuspagePayload,
@@ -131,5 +132,12 @@ export default {
     _ctx: ExecutionContext,
   ): Promise<Response> {
     return handleFetch(request, env);
+  },
+  queue(
+    batch: MessageBatch<QueueEventEnvelope>,
+    env: WorkerEnv,
+    _ctx: ExecutionContext,
+  ): Promise<void> {
+    return handleQueue(batch, env);
   },
 } satisfies ExportedHandler<WorkerEnv, QueueEventEnvelope>;
