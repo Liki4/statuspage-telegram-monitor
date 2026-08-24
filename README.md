@@ -123,6 +123,7 @@ umask 077
 mkdir -p dlq-recovery && cd dlq-recovery
 
 export ACCOUNT_ID='your-cloudflare-account-id'
+export CLOUDFLARE_ACCOUNT_ID="$ACCOUNT_ID"
 read -rsp 'Cloudflare API token (Queues Edit): ' CLOUDFLARE_API_TOKEN
 echo
 export CLOUDFLARE_API_TOKEN
@@ -141,7 +142,7 @@ curl --silent --show-error --fail-with-body \
   "https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/queues/${DLQ_QUEUE_ID}/messages/pull" \
   --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
   --header 'Content-Type: application/json' \
-  --data '{"batch_size":1,"visibility_timeout_ms":600000}' \
+  --data '{"batch_size":1,"visibility_timeout":600000}' \
   | tee dlq-pull.json
 
 jq -e '.success == true and (.result.messages | length) == 1' dlq-pull.json
