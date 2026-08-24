@@ -11,10 +11,13 @@
 | Worker 名称 | `statuspage-telegram-monitor` |
 | 时区 | `Asia/Shanghai` |
 | Telegram 目标 | 1 个 `chat_id` |
-| Statuspage 页面 | Cloudflare、GitHub、OpenAI、Claude |
+| Statuspage 页面映射 | Cloudflare、GitHub、OpenAI、Claude |
+| 可直接订阅 Webhook | Cloudflare、GitHub、Claude |
 | KV 命名空间 | `statuspage-telegram-config` |
 | 主 Queue | `statuspage-telegram-notifications` |
 | DLQ | `statuspage-telegram-dlq` |
+
+OpenAI 当前未开放公共 Webhook。它的 `page.id` 可以保留在 KV 中，但当前纯 Webhook 版本不会主动轮询 OpenAI API、RSS 或 Atom feed，因此不会自动收到 OpenAI 事件。
 
 文档后半部分同时提供完整的 Wrangler CLI 部署方式。
 
@@ -469,13 +472,12 @@ action: acknowledged
 5. Bot 是否有向目标用户或群组发消息的权限；
 6. Queue 日志是否出现 `retry` 或 `failed`。
 
-## 17. 订阅四个 Statuspage
+## 17. 订阅提供公共 Webhook 的 Statuspage
 
-四个页面分别打开：
+当前可直接订阅：
 
 - Cloudflare：<https://www.cloudflarestatus.com>
 - GitHub：<https://www.githubstatus.com>
-- OpenAI：<https://status.openai.com>
 - Claude：<https://status.claude.com>
 
 在每个页面执行：
@@ -491,9 +493,13 @@ action: acknowledged
 4. 如页面允许选择组件，选择你希望监控的组件；首次测试可选择全部；
 5. 按页面提示完成确认或验证。
 
-四个页面使用相同 Worker URL 和 Secret。Worker 根据 payload 中的 `page.id` 区分来源。
+三个页面使用相同 Worker URL 和 Secret。Worker 根据 payload 中的 `page.id` 区分来源。Statuspage 的确认 payload 可能不是 Incident 或 Component 事件；Worker 会返回 HTTP `202` 和 `unsupported_event`，但不会发送 Telegram 通知，这是正常行为。
 
-如果某个页面当前没有提供 Webhook 订阅选项，则不能直接接入本 Worker；本项目目前不会轮询 RSS 或 Statuspage API。
+### 17.1 OpenAI 限制
+
+<https://status.openai.com> 提供兼容的 Statuspage API 和 `page.id`，但页面运营方当前没有开放公共 Webhook 订阅渠道。能够读取 `/api/v2/status.json` 不代表能够注册出站 Webhook。
+
+因此当前版本对 OpenAI 的 KV 页面映射只用于识别可能由其他可信来源提交的兼容 payload，并不会主动产生 OpenAI 通知。若需要监控 OpenAI，应另行增加 Cloudflare Cron Trigger，定时轮询 Statuspage API、RSS 或 Atom feed，并通过 KV 保存游标和去重状态。
 
 ## 18. 上线验收清单
 
@@ -508,7 +514,8 @@ action: acknowledged
 - [ ] 重复发送同一事件不会再次通知成功目标；
 - [ ] 主 Queue 最大重试次数为 5；
 - [ ] 主 Queue 的 DLQ 是 `statuspage-telegram-dlq`；
-- [ ] 四个 Statuspage 均已保存 Webhook 订阅；
+- [ ] Cloudflare、GitHub 和 Claude 已保存 Webhook 订阅；
+- [ ] 已了解 OpenAI 当前需要额外的轮询功能；
 - [ ] Bot Token、Webhook Secret 和真实 `chat_id` 没有进入仓库。
 
 ## 19. 更新 Telegram 目标
@@ -542,11 +549,11 @@ action: acknowledged
 
 1. 生成新的随机 Secret；
 2. 在 Worker Dashboard 更新 `WEBHOOK_SECRET`；
-3. 立即更新四个 Statuspage 的 Webhook URL；
+3. 立即更新 Cloudflare、GitHub 和 Claude 的 Webhook URL；
 4. 验证测试事件；
 5. 删除旧 URL 或旧订阅。
 
-更新 Worker Secret 和四个订阅之间存在短暂切换窗口，建议在低风险时段执行。
+更新 Worker Secret 和三个公开 Webhook 订阅之间存在短暂切换窗口，建议在低风险时段执行。
 
 ### 20.2 轮换 Telegram Bot Token
 

@@ -1,15 +1,63 @@
 # Statuspage Telegram Worker
 
-## What it does
+A production-oriented Cloudflare Worker that receives Atlassian Statuspage webhooks and delivers safe Chinese notifications to one or more Telegram users or groups.
 
-This Cloudflare Worker accepts one supported Statuspage webhook event at a time and publishes one Queue message for it. Every event in a deployment is delivered to the same configured Telegram target list. Runtime configuration lives in Workers KV, Queue retries handle transient delivery failures, and KV delivery records provide best-effort target-level deduplication.
+**Documentation:** [中文 Dashboard / Wrangler 部署手册](docs/deployment-zh.md)
 
-For a Dashboard-first walkthrough covering Cloudflare, GitHub, OpenAI, and Claude, see the [Chinese deployment guide](docs/deployment-zh.md).
+## Highlights
+
+- Receives documented Atlassian Statuspage Incident and Component webhooks.
+- Sends escaped Chinese Telegram HTML with safe HTTP(S) links and disabled previews.
+- Fans each event out to multiple Telegram `chat_id` targets through one bot.
+- Uses Cloudflare Queues for asynchronous delivery, retry, and DLQ handling.
+- Uses Workers KV for runtime configuration and seven-day target-level delivery records.
+- Skips targets that already succeeded when a partially failed Queue message is retried.
+- Keeps bot and webhook credentials in Worker Secrets.
+- Exposes no public administration or configuration API.
+- Uses native Worker APIs with no production runtime dependencies.
+
+## Architecture
+
+```text
+Atlassian Statuspage
+        │ POST /webhook?token=...
+        ▼
+Cloudflare Worker fetch handler
+        │ normalize one supported event
+        ▼
+Cloudflare Queue ──────► Dead Letter Queue after five retries
+        │
+        ▼
+Worker queue handler
+   ├── Workers KV config
+   ├── target-level delivery records
+   └── Telegram Bot API ──► user / group / supergroup
+```
+
+Every Statuspage in one deployment shares the same Telegram target list. Use separate deployments and resources when different domains need different bots or target sets.
+
+## Statuspage compatibility
+
+The Worker can receive events from any Atlassian Statuspage whose owner exposes the public **Webhook** subscription channel.
+
+| Source | Public Statuspage API | Public webhook subscription | Current support |
+| --- | --- | --- | --- |
+| Cloudflare | Yes | Yes | Direct webhook |
+| GitHub | Yes | Yes | Direct webhook |
+| Claude | Yes | Yes | Direct webhook |
+| OpenAI | Yes | No | Not directly subscribable |
+
+OpenAI uses a compatible Statuspage API but does not expose a public webhook subscription. Its `page.id` can be stored in KV, but this webhook-only Worker will not receive OpenAI events unless polling support is added later.
+
+API compatibility and webhook availability are separate: a public `/api/v2/status.json` endpoint identifies a page, but only the page owner can enable outbound webhook subscriptions.
 
 ## Supported events
 
 - Incident creation and update events.
 - Component status update events.
+- Authenticated but unsupported verification payloads are acknowledged with HTTP `202` and are not sent to Telegram.
+
+The current version does not poll Statuspage APIs, RSS, or Atom feeds.
 
 ## Requirements and free-tier budget
 
@@ -78,6 +126,23 @@ npx wrangler kv key get config --binding STATUSPAGE_KV --text --remote | jq
 
 Do not commit `config.json`. Its `version` must be `1`. `timezone` is optional and defaults to `Asia/Shanghai`; when set, it must be a valid IANA time-zone name. `telegram.targets` must be a non-empty array. Each target has a required string `chatId` (strings preserve negative group IDs and large IDs) and optional `label`, which is only for sanitized operational logging. `pages` maps a Statuspage page ID to an object with required `name` and optional absolute `http` or `https` `url`. KV is eventually consistent, so a config update can take time to reach every location.
 
+### Multiple Telegram targets
+
+Add every user or group to the same target array:
+
+```json
+{
+  "telegram": {
+    "targets": [
+      { "chatId": "123456789", "label": "administrator" },
+      { "chatId": "-1001234567890", "label": "operations group" }
+    ]
+  }
+}
+```
+
+Keep `chatId` values as strings and do not duplicate them. The bot must be able to post in every target chat. A failure for one target retries only unfinished targets because successful targets already have delivery records.
+
 ## Deploy and custom domain
 
 ```bash
@@ -89,13 +154,15 @@ After deployment, add a domain in Cloudflare Dashboard: **Workers & Pages** → 
 
 ## Subscribe Statuspage pages
 
-Use this URL shape in each Statuspage subscription:
+For each page that exposes **Subscribe to Updates → Webhook**, use this URL shape:
 
 ```text
 https://status-alerts.example.com/webhook?token=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 ```
 
-Every Statuspage in one deployment uses this same endpoint and shared webhook secret. Statuspage requires a `2xx` response within 30 seconds; this Worker responds with `202` after Queue acceptance, while Telegram delivery happens asynchronously.
+Cloudflare, GitHub, and Claude currently expose compatible public webhook subscriptions. OpenAI does not, so adding its `page.id` to KV alone will not create an event source.
+
+Every subscribed page in one deployment uses the same endpoint and shared webhook secret. Statuspage requires a `2xx` response within 30 seconds; this Worker responds with `202` after Queue acceptance, while Telegram delivery happens asynchronously. Statuspage confirmation payloads that are not Incident or Component events are acknowledged as `unsupported_event` and intentionally produce no Telegram message.
 
 ## Local development
 
@@ -197,6 +264,21 @@ unset CLOUDFLARE_API_TOKEN
 ```
 
 If the lease expires before acknowledgement, do not reuse its stale `lease_id`; pull the DLQ message again. Always remove the temporary HTTP pull consumer when finished, including after an aborted recovery. Never acknowledge the DLQ message merely because the primary Queue accepted the replay.
+
+## Project layout
+
+```text
+src/index.ts       HTTP webhook producer and Worker entrypoint
+src/webhook.ts     Statuspage payload normalization
+src/config.ts      KV configuration validation
+src/formatter.ts   Chinese Telegram HTML formatting
+src/dedup.ts       fingerprints and delivery records
+src/telegram.ts    Telegram Bot API client
+src/consumer.ts    Queue fan-out, retry, logging, and acknowledgement
+test/              unit and Miniflare integration tests
+docs/deployment-zh.md
+                   Dashboard-first Chinese deployment runbook
+```
 
 ## Security
 
