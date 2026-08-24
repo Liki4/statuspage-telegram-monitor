@@ -96,6 +96,45 @@ describe("formatTelegramMessage", () => {
     expect(text).toContain("…");
   });
 
+  it("bounds escaped incident static content and links", () => {
+    const event = structuredClone(incidentEvent);
+    const externalText = '"'.repeat(300);
+    const longUrl = `https://example.com/?${"&".repeat(1000)}`;
+    event.page.statusDescription = externalText;
+    event.incident.name = externalText;
+    event.incident.status = externalText;
+    event.incident.impact = externalText;
+    event.incident.shortlink = longUrl;
+    event.incident.latestUpdate = {
+      ...event.incident.latestUpdate,
+      body: externalText.repeat(10),
+    };
+    const text = formatTelegramMessage(
+      event,
+      { name: externalText, url: longUrl },
+      "Asia/Shanghai",
+    );
+    expect(text.length).toBeLessThanOrEqual(TELEGRAM_SAFE_LENGTH);
+    expect(text).toContain("…");
+  });
+
+  it("bounds escaped component static content and links", () => {
+    const event = structuredClone(componentEvent);
+    const externalText = '"'.repeat(300);
+    const longUrl = `https://example.com/?${"&".repeat(1000)}`;
+    event.page.statusDescription = externalText;
+    event.component.name = externalText;
+    event.update.oldStatus = externalText;
+    event.update.newStatus = externalText;
+    const text = formatTelegramMessage(
+      event,
+      { name: externalText, url: longUrl },
+      "Asia/Shanghai",
+    );
+    expect(text.length).toBeLessThanOrEqual(TELEGRAM_SAFE_LENGTH);
+    expect(text).toContain("…");
+  });
+
   it.each([
     ["operational", "正常", "🟢"],
     ["degraded_performance", "性能下降", "🟡"],

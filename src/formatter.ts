@@ -119,8 +119,12 @@ function truncate(value: string, maximumLength: number): string {
   return maximumLength === 0 ? "…" : `${value.slice(0, maximumLength - 1)}…`;
 }
 
-function bounded(value: string | undefined, fallback = "未知"): string {
-  return truncate(value ?? fallback, 300);
+function bounded(
+  value: string | undefined,
+  fallback = "未知",
+  maximumLength = 300,
+): string {
+  return truncate(value ?? fallback, maximumLength);
 }
 
 function translated(
@@ -139,20 +143,47 @@ function strongestSeverity(candidates: Array<Severity | undefined>): Severity {
   "⚪");
 }
 
-function pageName(event: NormalizedStatuspageEvent, pageConfig?: StatuspageConfig): string {
-  return bounded(pageConfig?.name ?? event.page.id);
+function pageName(
+  event: NormalizedStatuspageEvent,
+  pageConfig: StatuspageConfig | undefined,
+  maximumLength: number,
+): string {
+  return bounded(pageConfig?.name ?? event.page.id, "未知", maximumLength);
 }
 
-function pageLink(event: NormalizedStatuspageEvent, pageConfig?: StatuspageConfig): string {
-  const name = escapeHtml(pageName(event, pageConfig));
-  const url = safeHttpUrl(pageConfig?.url);
+function pageLink(
+  event: NormalizedStatuspageEvent,
+  pageConfig: StatuspageConfig | undefined,
+  maximumLength: number,
+  includeLink: boolean,
+): string {
+  const name = escapeHtml(pageName(event, pageConfig, maximumLength));
+  const url = includeLink ? safeHttpUrl(pageConfig?.url) : undefined;
   return url === undefined ? name : `<a href="${escapeHtml(url)}">${name}</a>`;
 }
 
-function pageStatus(event: NormalizedStatuspageEvent): string {
+function pageStatus(event: NormalizedStatuspageEvent, maximumLength: number): string {
   return bounded(
     event.page.statusDescription ?? translated(event.page.statusIndicator, impact),
+    "未知",
+    maximumLength,
   );
+}
+
+function maximumFittingFieldLength(messageAt: (maximumLength: number) => string): number | undefined {
+  if (messageAt(0).length > TELEGRAM_SAFE_LENGTH) return undefined;
+
+  let lowerBound = 0;
+  let upperBound = 300;
+  while (lowerBound < upperBound) {
+    const candidateLength = Math.ceil((lowerBound + upperBound) / 2);
+    if (messageAt(candidateLength).length <= TELEGRAM_SAFE_LENGTH) {
+      lowerBound = candidateLength;
+    } else {
+      upperBound = candidateLength - 1;
+    }
+  }
+  return lowerBound;
 }
 
 function incidentMessage(
@@ -160,6 +191,9 @@ function incidentMessage(
   pageConfig: StatuspageConfig | undefined,
   timezone: string,
   updateBody: string,
+  maximumFieldLength: number,
+  includePageLink: boolean,
+  includeDetailLink: boolean,
 ): string {
   const latestUpdate = event.incident.latestUpdate;
   const severity = strongestSeverity([
@@ -176,16 +210,16 @@ function incidentMessage(
   ]
     .map((value) => formatTimestamp(value, timezone))
     .find((value) => value !== undefined) ?? "未知";
-  const shortlink = safeHttpUrl(event.incident.shortlink);
+  const shortlink = includeDetailLink ? safeHttpUrl(event.incident.shortlink) : undefined;
   const detailLink =
     shortlink === undefined ? "" : `\n<a href="${escapeHtml(shortlink)}">查看详情</a>`;
 
-  return `${severity} ${pageLink(event, pageConfig)}：<b>重大事件</b>
+  return `${severity} ${pageLink(event, pageConfig, maximumFieldLength, includePageLink)}：<b>重大事件</b>
 
-<b>事件：</b>${escapeHtml(bounded(event.incident.name))}
-<b>状态：</b>${escapeHtml(bounded(translated(event.incident.status, incidentStatus)))}
-<b>影响：</b>${escapeHtml(bounded(translated(event.incident.impact, impact)))}
-<b>页面状态：</b>${escapeHtml(pageStatus(event))}
+<b>事件：</b>${escapeHtml(bounded(event.incident.name, "未知", maximumFieldLength))}
+<b>状态：</b>${escapeHtml(bounded(translated(event.incident.status, incidentStatus), "未知", maximumFieldLength))}
+<b>影响：</b>${escapeHtml(bounded(translated(event.incident.impact, impact), "未知", maximumFieldLength))}
+<b>页面状态：</b>${escapeHtml(pageStatus(event, maximumFieldLength))}
 
 <b>更新：</b>
 ${escapeHtml(updateBody)}
@@ -197,6 +231,8 @@ function componentMessage(
   event: NormalizedComponentEvent,
   pageConfig: StatuspageConfig | undefined,
   timezone: string,
+  maximumFieldLength: number,
+  includePageLink: boolean,
 ): string {
   const severity = strongestSeverity([
     componentSeverity[event.update.newStatus ?? ""],
@@ -205,12 +241,53 @@ function componentMessage(
   ]);
   const timestamp = formatTimestamp(event.update.createdAt, timezone) ?? "未知";
 
-  return `${severity} ${pageLink(event, pageConfig)}：<b>组件状态更新</b>
+  return `${severity} ${pageLink(event, pageConfig, maximumFieldLength, includePageLink)}：<b>组件状态更新</b>
 
-<b>组件：</b>${escapeHtml(bounded(event.component.name))}
-<b>状态：</b>${escapeHtml(bounded(translated(event.update.oldStatus, componentStatus)))} → ${escapeHtml(bounded(translated(event.update.newStatus, componentStatus)))}
-<b>页面状态：</b>${escapeHtml(pageStatus(event))}
+<b>组件：</b>${escapeHtml(bounded(event.component.name, "未知", maximumFieldLength))}
+<b>状态：</b>${escapeHtml(bounded(translated(event.update.oldStatus, componentStatus), "未知", maximumFieldLength))} → ${escapeHtml(bounded(translated(event.update.newStatus, componentStatus), "未知", maximumFieldLength))}
+<b>页面状态：</b>${escapeHtml(pageStatus(event, maximumFieldLength))}
 <b>时间：</b>${escapeHtml(timestamp)}`;
+}
+
+interface IncidentLayout {
+  maximumFieldLength: number;
+  includePageLink: boolean;
+  includeDetailLink: boolean;
+}
+
+function incidentLayout(
+  event: NormalizedIncidentEvent,
+  pageConfig: StatuspageConfig | undefined,
+  timezone: string,
+  body: string,
+): IncidentLayout {
+  let includePageLink = true;
+  let includeDetailLink = true;
+  const minimumBody = truncate(body, 0);
+
+  while (true) {
+    const maximumFieldLength = maximumFittingFieldLength((fieldLength) =>
+      incidentMessage(
+        event,
+        pageConfig,
+        timezone,
+        minimumBody,
+        fieldLength,
+        includePageLink,
+        includeDetailLink,
+      ),
+    );
+    if (maximumFieldLength !== undefined) {
+      return { maximumFieldLength, includePageLink, includeDetailLink };
+    }
+    if (includeDetailLink) {
+      includeDetailLink = false;
+    } else if (includePageLink) {
+      includePageLink = false;
+    } else {
+      return { maximumFieldLength: 0, includePageLink, includeDetailLink };
+    }
+  }
 }
 
 function formatIncidentMessage(
@@ -219,8 +296,19 @@ function formatIncidentMessage(
   timezone: string,
 ): string {
   const body = event.incident.latestUpdate?.body ?? "未知";
+  const layout = incidentLayout(event, pageConfig, timezone, body);
+  const messageFor = (updateBody: string) =>
+    incidentMessage(
+      event,
+      pageConfig,
+      timezone,
+      updateBody,
+      layout.maximumFieldLength,
+      layout.includePageLink,
+      layout.includeDetailLink,
+    );
   const initialBody = truncate(body, 3000);
-  const initialMessage = incidentMessage(event, pageConfig, timezone, initialBody);
+  const initialMessage = messageFor(initialBody);
   if (initialMessage.length <= TELEGRAM_SAFE_LENGTH) return initialMessage;
 
   let lowerBound = 0;
@@ -228,14 +316,39 @@ function formatIncidentMessage(
   while (lowerBound < upperBound) {
     const candidateLength = Math.ceil((lowerBound + upperBound) / 2);
     const candidate = truncate(body, candidateLength);
-    if (incidentMessage(event, pageConfig, timezone, candidate).length <= TELEGRAM_SAFE_LENGTH) {
+    if (messageFor(candidate).length <= TELEGRAM_SAFE_LENGTH) {
       lowerBound = candidateLength;
     } else {
       upperBound = candidateLength - 1;
     }
   }
 
-  return incidentMessage(event, pageConfig, timezone, truncate(body, lowerBound));
+  return messageFor(truncate(body, lowerBound));
+}
+
+function formatComponentMessage(
+  event: NormalizedComponentEvent,
+  pageConfig: StatuspageConfig | undefined,
+  timezone: string,
+): string {
+  let includePageLink = true;
+  let maximumFieldLength = maximumFittingFieldLength((fieldLength) =>
+    componentMessage(event, pageConfig, timezone, fieldLength, includePageLink),
+  );
+  if (maximumFieldLength === undefined) {
+    includePageLink = false;
+    maximumFieldLength = maximumFittingFieldLength((fieldLength) =>
+      componentMessage(event, pageConfig, timezone, fieldLength, includePageLink),
+    ) ?? 0;
+  }
+
+  return componentMessage(
+    event,
+    pageConfig,
+    timezone,
+    maximumFieldLength,
+    includePageLink,
+  );
 }
 
 export function formatTelegramMessage(
@@ -245,5 +358,5 @@ export function formatTelegramMessage(
 ): string {
   return event.type === "incident"
     ? formatIncidentMessage(event, pageConfig, timezone)
-    : componentMessage(event, pageConfig, timezone);
+    : formatComponentMessage(event, pageConfig, timezone);
 }
