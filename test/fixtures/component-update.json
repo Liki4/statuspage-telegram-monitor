@@ -1,0 +1,24 @@
+{
+  "meta": {
+    "unsubscribe": "https://status.example.com/?unsubscribe=abc",
+    "documentation": "https://support.atlassian.com/statuspage/"
+  },
+  "page": {
+    "id": "j2mfxwj97wnj",
+    "status_indicator": "major",
+    "status_description": "Partial System Outage"
+  },
+  "component_update": {
+    "created_at": "2026-08-24T04:30:00Z",
+    "new_status": "operational",
+    "old_status": "major_outage",
+    "id": "k7730b5v92bv",
+    "component_id": "rb5wq1dczvbm"
+  },
+  "component": {
+    "created_at": "2020-01-01T00:00:00Z",
+    "id": "rb5wq1dczvbm",
+    "name": "Some Component",
+    "status": "operational"
+  }
+}
